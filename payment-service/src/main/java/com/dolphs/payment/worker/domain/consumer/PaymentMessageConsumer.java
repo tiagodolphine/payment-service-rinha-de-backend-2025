@@ -4,6 +4,7 @@ import com.dolphs.payment.domain.model.PaymentMessage;
 import com.dolphs.payment.domain.model.PaymentTransaction;
 import com.dolphs.payment.repository.PaymentRepositoryImpl;
 import com.dolphs.payment.worker.domain.processor.PaymentProcessor;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +14,6 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
@@ -21,7 +21,6 @@ public class PaymentMessageConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentMessageConsumer.class);
     private final AtomicBoolean running = new AtomicBoolean(true);
-    private final AtomicBoolean skip = new AtomicBoolean(false);
     private final PaymentProcessor paymentProcessor;
     private final PaymentRepositoryImpl paymentRepository;
     private final int chunkSize;
@@ -32,25 +31,24 @@ public class PaymentMessageConsumer {
         this.chunkSize = chunkSize;
         this.paymentProcessor = paymentProcessor;
         this.paymentRepository = paymentRepository;
-        try {
-            loop = fetchMessages()
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .repeatWhen(completed -> completed.delayElements(Duration.ofMillis(5)))
-                    .subscribe();
-        } catch (Exception e) {
-            log.error("Error in message consumer loop", e);
-        }
     }
 
     @PreDestroy
     public void onShutdown() {
-        log.info("Spring context shutting down, stopping consumer...");
+        if (loop != null && !loop.isDisposed()) {
+            log.info("Stopping PaymentMessageConsumer loop");
+            loop.dispose();
+        }
         running.set(false);
-        loop.dispose();
+        log.info("PaymentMessageConsumer stopped");
     }
 
-    public Mono<Void> fetchMessages() {
-        return paymentRepository.processChunk(chunkSize, this::onMessage);
+    @PostConstruct
+    public void processMessages() {
+        running.set(true);
+        loop = paymentRepository.processChunk(chunkSize, this::onMessage)
+                .subscribeOn(Schedulers.boundedElastic())
+                .subscribe();
     }
 
     public Mono<PaymentMessage> onMessageRemote(PaymentMessage paymentMessage) {

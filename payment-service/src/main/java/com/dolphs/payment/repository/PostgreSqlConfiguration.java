@@ -63,29 +63,4 @@ public class PostgreSqlConfiguration {
         ConnectionPool pool = new ConnectionPool(configuration);
         return pool;
     }
-
-    @Bean
-    public ConnectionPool connectionFactory2() {
-        Map<String, String> options = new HashMap<>();
-        options.put("lock_timeout", "3s");
-        //options.put("statement_timeout", "5m");
-        var connectionFactory = new PostgresqlConnectionFactory(PostgresqlConnectionConfiguration.builder()
-                .host(host)
-                .port(port)
-                .username(username)
-                .password(password)
-                .database(database)
-                .options(options)
-                .build());
-
-        // Create a ConnectionPool for connectionFactory
-        ConnectionPoolConfiguration configuration = ConnectionPoolConfiguration.builder(connectionFactory)
-                .maxIdleTime(Duration.ofMillis(1000))
-                .maxSize(maxConnections)
-                .initialSize(minConnections)
-                .build();
-
-        ConnectionPool pool = new ConnectionPool(configuration);
-        return pool;
-    }
 }
