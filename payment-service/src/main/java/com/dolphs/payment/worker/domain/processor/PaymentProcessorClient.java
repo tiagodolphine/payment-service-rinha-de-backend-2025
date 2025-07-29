@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Service
 public class PaymentProcessorClient {
 
-    public static final Duration TIMEOUT = Duration.ofMillis(1500);
+    public static final Duration TIMEOUT = Duration.ofMillis(5000);
     private static final Logger log = LoggerFactory.getLogger(PaymentProcessorClient.class);
 
     @Autowired
@@ -63,7 +63,7 @@ public class PaymentProcessorClient {
                 .maxConnections(2000)
                 .pendingAcquireMaxCount(2000)
                 .maxIdleTime(Duration.ofSeconds(30))
-                .maxLifeTime(Duration.ofSeconds(1))
+                .maxLifeTime(Duration.ofSeconds(5))
                 .evictInBackground(Duration.ofSeconds(10))
                 .build();
 
@@ -71,7 +71,7 @@ public class PaymentProcessorClient {
                 .maxConnections(2000)
                 .pendingAcquireMaxCount(2000)
                 .maxIdleTime(Duration.ofSeconds(30))
-                .maxLifeTime(Duration.ofSeconds(1))
+                .maxLifeTime(Duration.ofSeconds(5))
                 .evictInBackground(Duration.ofSeconds(10))
                 .build();
 
@@ -92,9 +92,10 @@ public class PaymentProcessorClient {
 
 
     public void switchFallbackClient() {
-        if (this.client.get().retry.getAndIncrement() > maxRetries) {
-            this.client.set(paymentProcessorFallback);
-        }
+        cachedHealthCheck.set(true);
+//        if (this.client.get().retry.getAndIncrement() > maxRetries) {
+//            this.client.set(paymentProcessorFallback);
+//        }
     }
 
     @PostConstruct
@@ -104,7 +105,6 @@ public class PaymentProcessorClient {
                     //log.info("Starting health check refresh");
                     return refreshHealthCheck();
                 })
-                .repeat()
                 .subscribe();
     }
 
@@ -133,8 +133,9 @@ public class PaymentProcessorClient {
     }
 
     public void switchDefaultClient() {
-        this.paymentProcessorFallback.retry.set(0);
-        this.client.set(paymentProcessorDefault);
+        cachedHealthCheck.set(true);
+        //this.paymentProcessorFallback.retry.set(0);
+        //this.client.set(paymentProcessorDefault);
     }
 
     @RegisterReflectionForBinding(Payment.class)

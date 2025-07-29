@@ -18,9 +18,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
-import java.lang.invoke.MethodHandles;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -61,20 +59,14 @@ public class RouterEndpoints {
 
     @RegisterReflectionForBinding(PaymentMessage.class)
     public Mono<ServerResponse> createPayment(ServerRequest request) {
-        var body = request.bodyToMono(PaymentMessage.class);
-        return body
-                .doOnNext(paymentMessage -> {
-                            boolean generate = request.queryParam("generate").map(Boolean::parseBoolean).orElse(false);
-                            if (generate) paymentMessage.setCorrelationId(UUID.randomUUID().toString());
-                            Mono.just(paymentMessage).flatMap(paymentService::createPayment)
-                                    .subscribe(
-                                            p -> log.info("Payment created: " + p.getCorrelationId()),
-                                            error -> log.error("Error creating payment: " + error.getMessage())
-                                    );
-                        }
-                )
+        return request.bodyToMono(PaymentMessage.class)
+                .map(paymentMessage -> {
+                    boolean generate = request.queryParam("generate").map(Boolean::parseBoolean).orElse(false);
+                    if (generate) paymentMessage.setCorrelationId(UUID.randomUUID().toString());
+                    return paymentMessage;
+                })
+                .flatMap(paymentService::createPayment)
                 .then(ServerResponse.ok().build());
-
     }
 
     @RegisterReflectionForBinding({PaymentSummary.class, Summary.class})

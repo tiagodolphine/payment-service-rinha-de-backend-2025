@@ -11,9 +11,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
@@ -25,12 +27,14 @@ public class PaymentMessageConsumer {
     private final PaymentRepositoryImpl paymentRepository;
     private final int chunkSize;
     private Disposable loop;
+    private long pollInterval;
 
     public PaymentMessageConsumer(PaymentProcessor paymentProcessor, PaymentRepositoryImpl paymentRepository,
-                                  @Value("${chunkSize}") int chunkSize) {
+                                  @Value("${chunkSize}") int chunkSize,@Value("${pollInterval}") long pollInterval) {
         this.chunkSize = chunkSize;
         this.paymentProcessor = paymentProcessor;
         this.paymentRepository = paymentRepository;
+        this.pollInterval = pollInterval;
     }
 
     @PreDestroy
@@ -46,13 +50,11 @@ public class PaymentMessageConsumer {
     @PostConstruct
     public void processMessages() {
         running.set(true);
-        loop = paymentRepository.processChunk(chunkSize, this::onMessage)
-                .subscribeOn(Schedulers.boundedElastic())
+        loop = Mono.just("")
+                .delayElement(Duration.ofMillis(pollInterval))
+                .flatMap(tick -> paymentRepository.processChunk(chunkSize, this::onMessage))
+                .repeat()
                 .subscribe();
-    }
-
-    public Mono<PaymentMessage> onMessageRemote(PaymentMessage paymentMessage) {
-        return Mono.empty();
     }
 
     public Mono<PaymentTransaction> onMessage(PaymentMessage paymentMessage) {

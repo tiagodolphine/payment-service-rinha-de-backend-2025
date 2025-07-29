@@ -15,46 +15,56 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Function;
 
 @Repository
 public class PaymentRepositoryImpl {
     private final ConnectionPool connectionFactory;
     private final Logger log = LoggerFactory.getLogger(this.getClass());
-    private final Sinks.Many<PaymentMessage> sink;
+    private final ConcurrentLinkedQueue<PaymentMessage> queue = new ConcurrentLinkedQueue<>();
 
     public PaymentRepositoryImpl(@Qualifier("connectionFactory") ConnectionPool connectionFactory) {
         this.connectionFactory = connectionFactory;
-        this.sink = Sinks.many().unicast().onBackpressureBuffer(new ArrayDeque<>());
     }
 
     public Mono<PaymentMessage> save(PaymentMessage paymentMessage) {
-        sink.tryEmitNext(paymentMessage);
+        queue.offer(paymentMessage);
         return Mono.just(paymentMessage);
     }
 
     public Mono<Void> processChunk(int chunkSize, Function<PaymentMessage, Mono<PaymentTransaction>> processor) {
-        int parallelism = chunkSize; // Number of concurrent processes
-        return sink.asFlux()
+        int parallelism = chunkSize;
+        return Flux.defer(() -> Flux.fromIterable(pollMessages(chunkSize)))
+                .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(message ->
                                 processor.apply(message)
                                         .flatMap(this::savePaymentTransaction)
                                         .onErrorResume(e -> {
                                             log.error("Error processing message, re-queuing", e);
-                                            save(message).subscribe();
+                                            save(message).delayElement(Duration.ofSeconds(2)).subscribe();
                                             return Mono.empty();
                                         }),
-                        parallelism // concurrency level
+                        parallelism, parallelism
                 )
-                .onErrorResume(e -> {
-                    log.error("Error processing chunk", e);
-                    return Mono.empty();
-                })
                 .then();
     }
+
+    private List<PaymentMessage> pollMessages(int chunkSize) {
+        List<PaymentMessage> batch = new ArrayList<>(chunkSize);
+        for (int i = 0; i < chunkSize; i++) {
+            PaymentMessage msg = queue.poll();
+            if (msg == null) break;
+            batch.add(msg);
+        }
+        return batch;
+    }
+
 
     //Payment Sumary
 
