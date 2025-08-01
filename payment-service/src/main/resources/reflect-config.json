@@ -1,0 +1,14 @@
+[
+  {
+    "name": "com.hazelcast.instance.GeneratedBuildProperties",
+    "fields": [
+      { "name": "ARTIFACT_ID", "allowUnsafeAccess": true },
+      { "name": "VERSION", "allowUnsafeAccess": true },
+      { "name": "BUILD", "allowUnsafeAccess": true },
+      { "name": "REVISION", "allowUnsafeAccess": true },
+      { "name": "DISTRIBUTION", "allowUnsafeAccess": true },
+      { "name": "COMMIT_ID", "allowUnsafeAccess": true },
+      { "name": "SERIALIZATION_VERSION", "allowUnsafeAccess": true }
+    ]
+  }
+]

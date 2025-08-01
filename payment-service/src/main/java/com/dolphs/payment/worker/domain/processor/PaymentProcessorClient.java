@@ -25,11 +25,12 @@ import java.time.OffsetDateTime;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 @Service
 public class PaymentProcessorClient {
 
-    public static final Duration TIMEOUT = Duration.ofMillis(5000);
+    public static final Duration TIMEOUT = Duration.ofMillis(1000);
     private static final Logger log = LoggerFactory.getLogger(PaymentProcessorClient.class);
 
     @Autowired
@@ -142,7 +143,9 @@ public class PaymentProcessorClient {
     public Mono<PaymentTransaction> process(PaymentMessage payment) {
         //POST /payments
         var currentClient = resolveClient();
-        var value = Mono.just(new Payment(payment.getAmount(), payment.getCorrelationId(), OffsetDateTime.now()));
+        Payment data = new Payment(payment.getAmount(), payment.getCorrelationId(), OffsetDateTime.now());
+        var value = Mono.just(data);
+        var transaction = new PaymentTransaction(data.getAmount(), currentClient.id, data.getRequestedAt(), payment.getCorrelationId());
         return Mono.just(currentClient)
                 .flatMap(c -> c.webClient
                         .post()
@@ -156,8 +159,8 @@ public class PaymentProcessorClient {
                         })
                         .toBodilessEntity()
                         .flatMap(r -> value)
-                        .map(r -> new PaymentTransaction(r.getAmount(), c.id, r.getRequestedAt(), payment.getId()))
-                        .onErrorReturn(IllegalArgumentException.class, new PaymentTransaction(payment.getAmount(), -1, OffsetDateTime.now(), payment.getId()))
+                        .map(r -> transaction)
+                        .onErrorReturn(IllegalArgumentException.class, new PaymentTransaction(payment.getAmount(), -1, OffsetDateTime.now(), payment.getCorrelationId()))
                         .onErrorResume(e -> {
                             switchFallbackClient();
                             log.error("Failed to process payment", e);

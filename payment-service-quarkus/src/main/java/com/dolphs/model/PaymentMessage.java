@@ -1,5 +1,8 @@
-package com.dolphs.payment.domain.model;
+package com.dolphs.model;
 
+import io.quarkus.runtime.annotations.RegisterForReflection;
+
+@RegisterForReflection
 public class PaymentMessage {
     private double amount;
     private String correlationId;

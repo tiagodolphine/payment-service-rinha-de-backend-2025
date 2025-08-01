@@ -3,39 +3,49 @@ package com.dolphs.payment.repository;
 import com.dolphs.payment.domain.model.PaymentMessage;
 import com.dolphs.payment.domain.model.PaymentTransaction;
 import com.dolphs.payment.domain.model.Summary;
-import io.r2dbc.pool.ConnectionPool;
-import io.r2dbc.spi.Connection;
-import io.r2dbc.spi.Row;
+import com.hazelcast.aggregation.Aggregator;
+import com.hazelcast.aggregation.Aggregators;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.map.IMap;
+import com.hazelcast.query.Predicate;
+import com.hazelcast.query.Predicates;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.io.Serializable;
 import java.time.Duration;
 import java.time.OffsetDateTime;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.function.Function;
 
 @Repository
-public class PaymentRepositoryImpl {
-    private final ConnectionPool connectionFactory;
+public class PaymentRepositoryImpl implements Serializable {
     private final Logger log = LoggerFactory.getLogger(this.getClass());
-    private final ConcurrentLinkedQueue<PaymentMessage> queue = new ConcurrentLinkedQueue<>();
+    private final BlockingQueue<PaymentMessage> queue;
+    private final IMap<String, PaymentTransaction> transactions;
+    private final IMap<String, PaymentTransaction> fallbackTransactions;
+    private final HazelcastInstance hz;
+    private static final long serialVersionUID = 1L;
 
-    public PaymentRepositoryImpl(@Qualifier("connectionFactory") ConnectionPool connectionFactory) {
-        this.connectionFactory = connectionFactory;
+    public PaymentRepositoryImpl(HazelcastInstance client) {
+        this.hz = client;
+        // Get a Blocking Queue called "my-distributed-queue"
+        queue = hz.getQueue("payments-queue");
+        transactions = hz.getMap("payments-transactions");
+        fallbackTransactions = hz.getMap("payments-transactions-fallback");
     }
 
     public Mono<PaymentMessage> save(PaymentMessage paymentMessage) {
-        queue.offer(paymentMessage);
-        return Mono.just(paymentMessage);
+        return Mono.just(paymentMessage).doOnNext(p->
+                Mono.just(queue.offer(paymentMessage)).subscribe());
     }
 
     public Mono<Void> processChunk(int chunkSize, Function<PaymentMessage, Mono<PaymentTransaction>> processor) {
@@ -44,7 +54,7 @@ public class PaymentRepositoryImpl {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(message ->
                                 processor.apply(message)
-                                        .flatMap(this::savePaymentTransaction)
+                                        .doOnNext(t -> savePaymentTransaction(t).subscribeOn(Schedulers.boundedElastic()).subscribe())
                                         .onErrorResume(e -> {
                                             log.error("Error processing message, re-queuing", e);
                                             save(message).delayElement(Duration.ofSeconds(2)).subscribe();
@@ -65,52 +75,36 @@ public class PaymentRepositoryImpl {
         return batch;
     }
 
-
     //Payment Sumary
 
+    @RegisterReflectionForBinding({Summary.class, PaymentTransaction.class, TransactionAggregator.class, Aggregator.class})
     public Mono<Summary> getPaymentsSummary(OffsetDateTime from, OffsetDateTime to, int processorId) {
-        String sql = """
-                SELECT
-                    COUNT(*) AS total_requests,
-                    COALESCE(SUM(amount), 0) AS total_amount
-                FROM payment_transaction
-                WHERE ($1 IS NULL OR timestamp >= $1)
-                  AND ($2 IS NULL OR timestamp <= $2)
-                  AND processor_id = $3
-                """;
-        return Mono.usingWhen(
-                connectionFactory.create(),
-                conn -> Mono.from(
-                                conn.createStatement(sql)
-                                        .bind(0, from)
-                                        .bind(1, to)
-                                        .bind(2, processorId)
-                                        .execute()
-                        )
-                        .flatMap(result -> Mono.from(result.map((row, metadata) ->
-                                new Summary(
-                                        row.get("total_requests", Integer.class),
-                                        row.get("total_amount", Double.class),
-                                        processorId
-                                )
-                        ))),
-                Connection::close
+        Predicate<String, PaymentTransaction> criteriaQuery = Predicates.and(
+                Predicates.between("timestamp", from, to)
         );
+        IMap<String, PaymentTransaction> targetMap = processorId == 1 ? transactions : fallbackTransactions;
+        Aggregator<Map.Entry<String, PaymentTransaction>, Double> aggregator = Aggregators.doubleSum("amount");
+        Aggregator<Map.Entry<String, PaymentTransaction>, Long> countAggregator = Aggregators.count();
+        var sum = targetMap.aggregate(aggregator, criteriaQuery);
+        var count = targetMap.aggregate(countAggregator, criteriaQuery);
+        return Mono.just(new Summary(count.intValue(), sum, processorId));
     }
 
     public Mono<PaymentTransaction> savePaymentTransaction(PaymentTransaction paymentTransaction) {
-        String sql = "INSERT INTO payment_transaction (amount, processor_id, timestamp) " +
-                "VALUES ($1, $2, $3)";
-        return Mono.usingWhen(
-                connectionFactory.create(),
-                conn -> Mono.from(conn.createStatement(sql)
-                                .bind(0, paymentTransaction.getAmount())
-                                .bind(1, paymentTransaction.getProcessorId())
-                                .bind(2, paymentTransaction.getTimestamp())
-                                .execute()
-                        )
-                        .flatMap(r -> Mono.from(r.getRowsUpdated()))
-                        .map(r -> paymentTransaction),
-                Connection::close);
+        if (paymentTransaction.getProcessorId() < 0) {
+            return Mono.empty();
+        }
+        IMap<String, PaymentTransaction> targetMap = paymentTransaction.getProcessorId() == 1 ? transactions : fallbackTransactions;
+        return Mono.just(paymentTransaction).doOnNext(p ->
+                Mono.fromCallable(()-> targetMap.put(paymentTransaction.getId(), paymentTransaction)).subscribe());
+    }
+
+    public Mono<PaymentTransaction> deletePaymentTransaction(PaymentTransaction paymentTransaction) {
+        if (paymentTransaction.getProcessorId() < 0) {
+            return Mono.empty();
+        }
+        IMap<String, PaymentTransaction> targetMap = paymentTransaction.getProcessorId() == 1 ? transactions : fallbackTransactions;
+        return Mono.just(paymentTransaction).doOnNext(p ->
+                Mono.fromCallable(()-> targetMap.remove(paymentTransaction.getId())).subscribe());
     }
 }
