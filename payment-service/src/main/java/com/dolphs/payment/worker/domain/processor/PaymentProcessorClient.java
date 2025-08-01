@@ -4,6 +4,7 @@ import com.dolphs.payment.domain.model.Payment;
 import com.dolphs.payment.domain.model.PaymentMessage;
 import com.dolphs.payment.domain.model.PaymentTransaction;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
@@ -14,19 +15,22 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 @Service
 public class PaymentProcessorClient {
 
-    public static final Duration TIMEOUT = Duration.ofMillis(1500);
+    public static final Duration TIMEOUT = Duration.ofMillis(1000);
     private static final Logger log = LoggerFactory.getLogger(PaymentProcessorClient.class);
 
     @Autowired
@@ -34,6 +38,12 @@ public class PaymentProcessorClient {
 
     @Value("${processor.retry.max}")
     private int maxRetries;
+
+
+    private AtomicReference<Client> client;
+    private Client paymentProcessorDefault;
+    private Client paymentProcessorFallback;
+    private final AtomicBoolean cachedHealthCheck = new AtomicBoolean(true);
 
     private class Client {
         private final WebClient webClient;
@@ -46,10 +56,6 @@ public class PaymentProcessorClient {
         }
     }
 
-    private AtomicReference<Client> client;
-    private Client paymentProcessorDefault;
-    private Client paymentProcessorFallback;
-
     public PaymentProcessorClient(@Value("${payment-processor.fallback.url}")
                                   String paymentProcessorFallbackUrl,
                                   @Value("${payment-processor.default.url}")
@@ -58,7 +64,7 @@ public class PaymentProcessorClient {
                 .maxConnections(2000)
                 .pendingAcquireMaxCount(2000)
                 .maxIdleTime(Duration.ofSeconds(30))
-                .maxLifeTime(Duration.ofSeconds(1))
+                .maxLifeTime(Duration.ofSeconds(5))
                 .evictInBackground(Duration.ofSeconds(10))
                 .build();
 
@@ -66,7 +72,7 @@ public class PaymentProcessorClient {
                 .maxConnections(2000)
                 .pendingAcquireMaxCount(2000)
                 .maxIdleTime(Duration.ofSeconds(30))
-                .maxLifeTime(Duration.ofSeconds(1))
+                .maxLifeTime(Duration.ofSeconds(5))
                 .evictInBackground(Duration.ofSeconds(10))
                 .build();
 
@@ -87,48 +93,85 @@ public class PaymentProcessorClient {
 
 
     public void switchFallbackClient() {
-        if (this.client.get().retry.getAndIncrement() > maxRetries) {
-            this.client.set(paymentProcessorFallback);
-        }
+        cachedHealthCheck.set(true);
+//        if (this.client.get().retry.getAndIncrement() > maxRetries) {
+//            this.client.set(paymentProcessorFallback);
+//        }
     }
 
-    boolean healthCheck() {
-        // Implement health check logic here, e.g., ping the service
-        // For simplicity, we assume the default client is always healthy
-        return true;
+    @PostConstruct
+    public void startHealthCheckRefresh() {
+        Flux.interval(Duration.ZERO, Duration.ofSeconds(5))
+                .flatMap(tick -> {
+                    //log.info("Starting health check refresh");
+                    return refreshHealthCheck();
+                })
+                .subscribe();
     }
 
+    private Mono<Void> refreshHealthCheck() {
+        return callRealHealthCheck()
+                .doOnNext(result -> {
+                    //log.info("Health check refresh completed {}", result);
+                    cachedHealthCheck.set(result);
+                })
+                .then();
+    }
+
+    @RegisterReflectionForBinding(HealthResponse.class)
+    private Mono<Boolean> callRealHealthCheck() {
+        return paymentProcessorDefault.webClient
+                .get()
+                .uri("/payments/service-health")
+                .retrieve()
+                .bodyToMono(HealthResponse.class)
+                .map(HealthResponse::isHealthy)
+                .onErrorReturn(false);
+    }
+
+    public Boolean healthCheck() {
+        return cachedHealthCheck.get();
+    }
 
     public void switchDefaultClient() {
-        this.paymentProcessorFallback.retry.set(0);
-        this.client.set(paymentProcessorDefault);
+        cachedHealthCheck.set(true);
+        //this.paymentProcessorFallback.retry.set(0);
+        //this.client.set(paymentProcessorDefault);
     }
 
     @RegisterReflectionForBinding(Payment.class)
     public Mono<PaymentTransaction> process(PaymentMessage payment) {
         //POST /payments
-        var currentClient = client.get();
-        var value = Mono.just(new Payment(payment.getAmount(), payment.getCorrelationId(), OffsetDateTime.now()));
-        return currentClient.webClient
-                .post()
-                .uri("/payments")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(value, Payment.class)
-                .retrieve()
-                .onStatus(HttpStatusCode::is4xxClientError, response -> {
-                    log.error("Error processing payment: {}", response.statusCode());
-                    return Mono.error(new IllegalArgumentException("error " + response.statusCode()));
-                })
-                .toBodilessEntity()
-                .flatMap(r -> value)
-                .map(r -> new PaymentTransaction(r.getAmount(), currentClient.id, r.getRequestedAt(), payment.getId()))
-                .onErrorReturn(IllegalArgumentException.class, new PaymentTransaction(payment.getAmount(), -1, OffsetDateTime.now(), payment.getId()))
-                .onErrorResume(e -> {
-                    switchFallbackClient();
-                    log.error("Failed to process payment", e);
-                    // handle/log error, return fallback or propagate
-                    return Mono.error(e);
-                })
-                .doOnSuccess(t -> switchDefaultClient());
+        var currentClient = resolveClient();
+        Payment data = new Payment(payment.getAmount(), payment.getCorrelationId(), OffsetDateTime.now());
+        var value = Mono.just(data);
+        var transaction = new PaymentTransaction(data.getAmount(), currentClient.id, data.getRequestedAt(), payment.getCorrelationId());
+        return Mono.just(currentClient)
+                .flatMap(c -> c.webClient
+                        .post()
+                        .uri("/payments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(value, Payment.class)
+                        .retrieve()
+                        .onStatus(HttpStatusCode::is4xxClientError, response -> {
+                            log.error("Error processing payment: {}", response.statusCode());
+                            return Mono.error(new IllegalArgumentException("error " + response.statusCode()));
+                        })
+                        .toBodilessEntity()
+                        .flatMap(r -> value)
+                        .map(r -> transaction)
+                        .onErrorReturn(IllegalArgumentException.class, new PaymentTransaction(payment.getAmount(), -1, OffsetDateTime.now(), payment.getCorrelationId()))
+                        .onErrorResume(e -> {
+                            switchFallbackClient();
+                            log.error("Failed to process payment", e);
+                            // handle/log error, return fallback or propagate
+                            return Mono.error(e);
+                        })
+                        .doOnSuccess(t -> switchDefaultClient())
+                );
+    }
+
+    private Client resolveClient() {
+        return healthCheck() ? paymentProcessorDefault : paymentProcessorFallback;
     }
 }

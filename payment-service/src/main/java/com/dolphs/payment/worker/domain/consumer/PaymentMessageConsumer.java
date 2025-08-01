@@ -4,12 +4,14 @@ import com.dolphs.payment.domain.model.PaymentMessage;
 import com.dolphs.payment.domain.model.PaymentTransaction;
 import com.dolphs.payment.repository.PaymentRepositoryImpl;
 import com.dolphs.payment.worker.domain.processor.PaymentProcessor;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -21,40 +23,38 @@ public class PaymentMessageConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentMessageConsumer.class);
     private final AtomicBoolean running = new AtomicBoolean(true);
-    private final AtomicBoolean skip = new AtomicBoolean(false);
     private final PaymentProcessor paymentProcessor;
     private final PaymentRepositoryImpl paymentRepository;
     private final int chunkSize;
     private Disposable loop;
+    private long pollInterval;
 
     public PaymentMessageConsumer(PaymentProcessor paymentProcessor, PaymentRepositoryImpl paymentRepository,
-                                  @Value("${chunkSize}") int chunkSize) {
+                                  @Value("${chunkSize}") int chunkSize,@Value("${pollInterval}") long pollInterval) {
         this.chunkSize = chunkSize;
         this.paymentProcessor = paymentProcessor;
         this.paymentRepository = paymentRepository;
-        try {
-            loop = fetchMessages()
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .repeatWhen(completed -> completed.delayElements(Duration.ofMillis(5)))
-                    .subscribe();
-        } catch (Exception e) {
-            log.error("Error in message consumer loop", e);
-        }
+        this.pollInterval = pollInterval;
     }
 
     @PreDestroy
     public void onShutdown() {
-        log.info("Spring context shutting down, stopping consumer...");
+        if (loop != null && !loop.isDisposed()) {
+            log.info("Stopping PaymentMessageConsumer loop");
+            loop.dispose();
+        }
         running.set(false);
-        loop.dispose();
+        log.info("PaymentMessageConsumer stopped");
     }
 
-    public Mono<Void> fetchMessages() {
-        return paymentRepository.processChunk(chunkSize, this::onMessage);
-    }
-
-    public Mono<PaymentMessage> onMessageRemote(PaymentMessage paymentMessage) {
-        return Mono.empty();
+    @PostConstruct
+    public void processMessages() {
+        running.set(true);
+        loop = Mono.just("")
+                .delayElement(Duration.ofMillis(pollInterval))
+                .flatMap(tick -> paymentRepository.processChunk(chunkSize, this::onMessage))
+                .repeat()
+                .subscribe();
     }
 
     public Mono<PaymentTransaction> onMessage(PaymentMessage paymentMessage) {

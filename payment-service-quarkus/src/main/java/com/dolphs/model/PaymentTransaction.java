@@ -1,14 +1,14 @@
-package com.dolphs.payment.domain.model;
+package com.dolphs.model;
 
 import java.time.OffsetDateTime;
 
 public class PaymentTransaction {
     private double amount;
-    private int processorId;
+    private String processorId;
     private OffsetDateTime timestamp;
     private String id;
 
-    public PaymentTransaction(double amount, int processorId, OffsetDateTime timestamp, String id) {
+    public PaymentTransaction(double amount, String processorId, OffsetDateTime timestamp, String id) {
         this.amount = amount;
         this.processorId = processorId;
         this.timestamp = timestamp;
@@ -19,7 +19,7 @@ public class PaymentTransaction {
         return amount;
     }
 
-    public int getProcessorId() {
+    public String getProcessorId() {
         return processorId;
     }
 
@@ -39,7 +39,7 @@ public class PaymentTransaction {
         this.amount = amount;
     }
 
-    public void setProcessorId(int processorId) {
+    public void setProcessorId(String processorId) {
         this.processorId = processorId;
     }
 

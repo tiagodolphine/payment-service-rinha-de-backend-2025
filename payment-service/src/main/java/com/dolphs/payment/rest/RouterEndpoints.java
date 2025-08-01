@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.module.afterburner.AfterburnerModule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,7 +18,6 @@ import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -33,6 +34,8 @@ public class RouterEndpoints {
     public RouterEndpoints(PaymentService paymentService) {
         this.paymentService = paymentService;
     }
+
+    private static Logger log = LoggerFactory.getLogger(RouterEndpoints.class);
 
     @Bean
     @Primary
@@ -56,14 +59,13 @@ public class RouterEndpoints {
 
     @RegisterReflectionForBinding(PaymentMessage.class)
     public Mono<ServerResponse> createPayment(ServerRequest request) {
-        return Mono.just(request)
-                .flatMap(r -> r.bodyToMono(PaymentMessage.class)
-                        .map(paymentMessage -> {
-                            boolean generate = r.queryParam("generate").map(Boolean::parseBoolean).orElse(false);
-                            if (generate) paymentMessage.setCorrelationId(UUID.randomUUID().toString());
-                            return paymentMessage;
-                        })
-                        .doOnNext(p -> paymentService.createPayment(p).subscribeOn(Schedulers.boundedElastic()).subscribe()))
+        return request.bodyToMono(PaymentMessage.class)
+                .map(paymentMessage -> {
+                    boolean generate = request.queryParam("generate").map(Boolean::parseBoolean).orElse(false);
+                    if (generate) paymentMessage.setCorrelationId(UUID.randomUUID().toString());
+                    return paymentMessage;
+                })
+                .flatMap(paymentService::createPayment)
                 .then(ServerResponse.ok().build());
     }
 
