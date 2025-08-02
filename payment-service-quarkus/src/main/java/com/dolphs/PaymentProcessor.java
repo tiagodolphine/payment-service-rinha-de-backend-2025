@@ -1,7 +1,6 @@
 package com.dolphs;
 
 import com.dolphs.model.HealthResponse;
-import com.dolphs.model.Payment;
 import com.dolphs.model.PaymentMessage;
 import com.dolphs.model.PaymentTransaction;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,12 +28,9 @@ public class PaymentProcessor {
     public static final Duration TIMEOUT = Duration.ofMillis(1500);
     private static final Logger log = LoggerFactory.getLogger(PaymentProcessor.class);
 
-
-    private ObjectMapper objectMapper;
-
     @ConfigProperty(name = "processor.retry.max")
     private int maxRetries;
-
+    private AtomicInteger retries = new AtomicInteger(0);
     private AtomicReference<Client> client;
     private Client paymentProcessorDefault;
     private Client paymentProcessorFallback;
@@ -80,6 +76,9 @@ public class PaymentProcessor {
 
 
     public void switchFallbackClient(boolean fallback) {
+        if (maxRetries > retries.incrementAndGet()) {
+            return;
+        }
         wait.set(fallback ? Duration.ofMillis(1000) : Duration.ZERO);
         cachedHealthCheck.set(false);
     }
@@ -130,8 +129,7 @@ public class PaymentProcessor {
     public void switchDefaultClient() {
         cachedHealthCheck.set(true);
         wait.set(Duration.ZERO);
-        //this.paymentProcessorFallback.retry.set(0);
-        //this.client.set(paymentProcessorDefault);
+        retries.set(0);
     }
 
     public Uni<PaymentTransaction> process(PaymentMessage payment) {
@@ -158,7 +156,7 @@ public class PaymentProcessor {
                             .map(res -> {
                                 if (res.statusCode() > 400 && res.statusCode() < 499) {
                                     log.error("Error processing payment: {}", res.statusCode());
-                                    return new PaymentTransaction(payment.getAmount(), "invalid", now, payment.getCorrelationId());
+                                    return new PaymentTransaction(payment.getAmount(), currentClient.id, now, payment.getCorrelationId());
                                     //throw new IllegalArgumentException("error " + res.statusCode());
                                 } else if (res.statusCode() > 300) {
                                     throw new RuntimeException("Error processing payment");
