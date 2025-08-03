@@ -14,7 +14,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
 import java.time.OffsetDateTime;
 
 @Singleton
@@ -34,17 +33,47 @@ public class QueueConsumer {
 
     Logger log = LoggerFactory.getLogger(QueueConsumer.class);
     final PaymentTransaction erroTransaction = new PaymentTransaction(0, "0", OffsetDateTime.now(), "Error");
+    @Inject
+    PaymentQueue paymentQueue;
+
+//    public void processMessages(@Observes StartupEvent ev) {
+//        Multi.createFrom().ticks().every(Duration.ofMillis(pollInterval))
+//                .emitOn(Infrastructure.getDefaultWorkerPool())
+//                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+//                .onOverflow().drop()
+//                .flatMap(t -> queue.dequeue(chunkSize).convert().toPublisher())
+//                .flatMap(t -> Multi.createFrom().iterable(t))
+//                .flatMap(m -> processor.process(m)
+//                        .onFailure().recoverWithUni(t -> onError(m))
+//                        .convert().toPublisher())
+//                .onItem().invoke(transaction ->
+//                        executor.fireAndForget(() -> {
+//                            queue.saveTransaction(transaction).await().indefinitely();
+//                        }))
+//                .onFailure().recoverWithMulti(e -> {
+//                    log.error("Error processing payment message", e);
+//                    return Multi.createFrom().empty();
+//                })
+//                .subscribe()
+//                .with(
+//                        r -> {
+//                            log.info("Processed transaction: " + r);
+//                        },
+//                        failure -> log.error("Failed to process transaction", failure),
+//                        () -> log.info("All transactions processed")
+//                );
+//    }
 
     public void processMessages(@Observes StartupEvent ev) {
-        Multi.createFrom().ticks().every(Duration.ofMillis(pollInterval))
-                .emitOn(Infrastructure.getDefaultWorkerPool())
-                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
-                .onOverflow().drop()
-                .flatMap(t -> queue.dequeue(chunkSize).convert().toPublisher())
-                .flatMap(t -> Multi.createFrom().iterable(t))
-                .flatMap(m -> processor.process(m)
-                        .onFailure().recoverWithUni(t -> onError(m))
-                        .convert().toPublisher())
+        paymentQueue.consume()
+                .emitOn(Infrastructure.getDefaultExecutor())
+                .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+                .onOverflow().buffer(10000)
+                .map(PaymentMessage.class::cast)
+                .flatMap(
+                        m -> processor.process(m)
+                                .onFailure().recoverWithUni(t -> onError(m))
+                                .convert().toPublisher())
                 .onItem().invoke(transaction ->
                         executor.fireAndForget(() -> {
                             queue.saveTransaction(transaction).await().indefinitely();
@@ -65,7 +94,7 @@ public class QueueConsumer {
 
     private Uni<PaymentTransaction> onError(PaymentMessage m) {
         executor.fireAndForget(() -> {
-            queue.enqueue(m).await().indefinitely();
+            queue.enqueue(m);
         });
         return Uni.createFrom().item(erroTransaction);
     }

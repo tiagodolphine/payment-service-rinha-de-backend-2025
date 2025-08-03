@@ -7,7 +7,9 @@ import com.dolphs.model.Summary;
 import io.quarkus.redis.datasource.ReactiveRedisDataSource;
 import io.quarkus.redis.datasource.search.CreateArgs;
 import io.quarkus.redis.datasource.search.FieldType;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.subscription.MultiEmitter;
 import io.vertx.mutiny.redis.client.Command;
 import io.vertx.mutiny.redis.client.Request;
 import io.vertx.mutiny.redis.client.Response;
@@ -24,6 +26,8 @@ public class PaymentQueue {
 
     ReactiveRedisDataSource reactive;
     Logger log = LoggerFactory.getLogger(PaymentQueue.class);
+    private MultiEmitter<? super PaymentMessage> emitter;
+    private final Multi<PaymentMessage> paymentStream;
 
     public PaymentQueue(ReactiveRedisDataSource reactive) {
         this.reactive = reactive;
@@ -37,14 +41,26 @@ public class PaymentQueue {
                 }, failure -> {
                     log.error("Error during index creation: " + failure.getMessage());
                 });
+        paymentStream = Multi.createFrom().emitter(e -> emitter = e);
+
     }
 
-    public Uni<Long> enqueue(PaymentMessage message) {
+    public Uni<Long> enqueueRedis(PaymentMessage message) {
         return reactive.list(PaymentMessage.class).lpush("payments", message);
     }
 
-    public Uni<List<PaymentMessage>> dequeue(int items) {
+    public Uni<List<PaymentMessage>> dequeueRedis(int items) {
         return reactive.list(PaymentMessage.class).lpop("payments", items);
+    }
+
+    public void enqueue(PaymentMessage message) {
+        if (emitter != null) {
+            emitter.emit(message);
+        }
+    }
+
+    public Multi<PaymentMessage> consume() {
+        return paymentStream;
     }
 
     public Uni<Void> saveTransaction(PaymentTransaction paymentTransaction) {

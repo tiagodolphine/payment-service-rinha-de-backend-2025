@@ -28,7 +28,7 @@ public class PaymentResource {
             if (generate.orElse(false)) {
                 message.setCorrelationId(UUID.randomUUID().toString());
             }
-            paymentQueue.enqueue(message).await().indefinitely();
+            paymentQueue.enqueue(message);
         });
         return Uni.createFrom().voidItem();
     }
@@ -38,5 +38,10 @@ public class PaymentResource {
         return paymentQueue.getSummary(
                 from.map(OffsetDateTime::parse).orElse(OffsetDateTime.now().minusHours(1)),
                 to.map(OffsetDateTime::parse).orElse(OffsetDateTime.now()));
+    }
+
+    @Route(path = "/health", methods = Route.HttpMethod.GET)
+    Uni<Void> health() {
+        return Uni.createFrom().voidItem();
     }
 }
