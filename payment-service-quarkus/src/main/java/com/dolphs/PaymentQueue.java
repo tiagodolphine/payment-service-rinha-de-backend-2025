@@ -16,7 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +27,6 @@ public class PaymentQueue {
 
     public PaymentQueue(ReactiveRedisDataSource reactive) {
         this.reactive = reactive;
-
         reactive.search().ftCreate("idx:transaction", new CreateArgs().onHash().prefixes("transaction:")
                         .indexedField("processorId", FieldType.TEXT)
                         .indexedField("amount", FieldType.NUMERIC)

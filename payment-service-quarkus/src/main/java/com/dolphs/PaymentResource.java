@@ -19,20 +19,18 @@ public class PaymentResource {
     @Inject
     PaymentQueue paymentQueue;
 
+    @Inject
+    virtualThreadExecutor executor;
+
     @Route(path = "/payments", produces = "application/json", methods = Route.HttpMethod.POST)
     Uni<Void> addPayment(@Body PaymentMessage message, @Param Optional<Boolean> generate) {
-        return Uni.createFrom().item(message)
-                .map(m -> {
-                    if (generate.orElse(false)) {
-                        m.setCorrelationId(UUID.randomUUID().toString());
-                    }
-                    return m;
-                })
-                .onItem().invoke(m -> {
-                    paymentQueue.enqueue(m).subscribe().with(item -> {
-                    });
-                })
-                .replaceWithVoid();
+        executor.fireAndForget(() -> {
+            if (generate.orElse(false)) {
+                message.setCorrelationId(UUID.randomUUID().toString());
+            }
+            paymentQueue.enqueue(message).await().indefinitely();
+        });
+        return Uni.createFrom().voidItem();
     }
 
     @Route(path = "/payments-summary", produces = "application/json", methods = Route.HttpMethod.GET)

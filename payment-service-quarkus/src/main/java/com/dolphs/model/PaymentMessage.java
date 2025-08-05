@@ -15,12 +15,6 @@ public class PaymentMessage {
         this.correlationId = correlationId;
     }
 
-    public PaymentMessage(double amount, String correlationId, long id) {
-        this.amount = amount;
-        this.correlationId = correlationId;
-
-    }
-
     public double getAmount() {
         return amount;
     }
